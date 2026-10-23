@@ -3372,6 +3372,10 @@ out:
 }
 
 /* tcb may be NULL */
+/* The OS route is needed before selecting a pinned UDP source. */
+#if defined(__Userspace__) && defined(__linux__) && !defined(__EMSCRIPTEN__)
+static int sctp_userspace_route_source(sctp_route_t *, struct sockaddr_storage *);
+#endif
 struct sctp_ifa *
 sctp_source_address_selection(struct sctp_inpcb *inp,
 			      struct sctp_tcb *stcb,
@@ -3518,6 +3522,52 @@ sctp_source_address_selection(struct sctp_inpcb *inp,
 		break;
 #endif
 	}
+/* Prefer an eligible OS-selected source, including during INIT/INIT-ACK. */
+#if defined(__Userspace__) && defined(__linux__) && !defined(__EMSCRIPTEN__)
+	if (fam == AF_INET || fam == AF_INET6) {
+		struct sockaddr_storage selected;
+		struct sctp_vrf *vrf;
+		struct sctp_ifn *ifn;
+		struct sctp_ifa *ifa;
+
+		if (sctp_userspace_route_source(ro, &selected)) {
+			SCTP_IPI_ADDR_RLOCK();
+			vrf = sctp_find_vrf(vrf_id);
+			if (vrf != NULL) {
+				LIST_FOREACH(ifn, &vrf->ifnlist, next_ifn)
+				{
+					LIST_FOREACH(ifa, &ifn->ifalist, next_ifa)
+					{
+						if (!sctp_cmpaddr(
+									&ifa->address.sa, (struct sockaddr *)&selected) ||
+								(ifa->localifa_flags &
+										(SCTP_BEING_DELETED | SCTP_ADDR_IFA_UNUSEABLE)) ||
+								((ifa->localifa_flags & SCTP_ADDR_DEFER_USE) &&
+										!non_asoc_addr_ok) ||
+								sctp_is_ifa_addr_acceptable(
+										ifa, dest_is_loop, dest_is_priv, fam) == NULL ||
+								(!(inp->sctp_flags & SCTP_PCB_FLAGS_BOUNDALL) &&
+										!sctp_is_addr_in_ep(inp, ifa))) {
+							continue;
+						}
+						if (stcb != NULL &&
+								(!sctp_is_address_in_scope(ifa, &stcb->asoc.scope, 0) ||
+										(sctp_is_addr_restricted(stcb, ifa) &&
+												(!non_asoc_addr_ok ||
+														!sctp_is_addr_pending(
+																stcb, ifa))))) {
+							continue;
+						}
+						atomic_add_int(&ifa->refcount, 1);
+						SCTP_IPI_ADDR_RUNLOCK();
+						return (ifa);
+					}
+				}
+			}
+			SCTP_IPI_ADDR_RUNLOCK();
+		}
+	}
+#endif
 	SCTPDBG(SCTP_DEBUG_OUTPUT2, "Select source addr for:");
 	SCTPDBG_ADDR(SCTP_DEBUG_OUTPUT2, (struct sockaddr *)&ro->ro_dst);
 	SCTP_IPI_ADDR_RLOCK();
@@ -15099,16 +15149,81 @@ sctp_v4src_match_nexthop(struct sctp_ifa *sifa, sctp_route_t *ro)
 	return (0);
 }
 #elif defined(__Userspace__)
-/* TODO __Userspace__ versions of sctp_vXsrc_match_nexthop(). */
-int
-sctp_v6src_match_nexthop(struct sockaddr_in6 *src6, sctp_route_t *ro)
+/* Resolve userspace mobility routes instead of always rejecting new addresses. */
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+/* Ask the OS which source it would use, without transmitting a packet. */
+static int sctp_userspace_route_source(sctp_route_t *ro, struct sockaddr_storage *source)
 {
-    return (0);
+	struct sockaddr_storage destination;
+	struct sockaddr *address;
+	socklen_t length, source_length;
+	int fd, result, saved_errno;
+
+	if (ro == NULL)
+		return (0);
+	address = (struct sockaddr *)&ro->ro_dst;
+	memset(&destination, 0, sizeof(destination));
+	switch (address->sa_family) {
+#ifdef INET
+	case AF_INET:
+		length = sizeof(struct sockaddr_in);
+		memcpy(&destination, address, length);
+		((struct sockaddr_in *)&destination)->sin_port = htons(9);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		length = sizeof(struct sockaddr_in6);
+		memcpy(&destination, address, length);
+		((struct sockaddr_in6 *)&destination)->sin6_port = htons(9);
+		break;
+#endif
+	default:
+		return (0);
+	}
+	fd = socket(address->sa_family, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+	if (fd < 0) {
+		return (0);
+	}
+	source_length = sizeof(*source);
+	memset(source, 0, sizeof(*source));
+	result = connect(fd, (struct sockaddr *)&destination, length) == 0 &&
+			 getsockname(fd, (struct sockaddr *)source, &source_length) == 0;
+	saved_errno = errno;
+	close(fd);
+	errno = saved_errno;
+	return (result);
 }
-int
-sctp_v4src_match_nexthop(struct sctp_ifa *sifa, sctp_route_t *ro)
+#endif
+
+int sctp_v6src_match_nexthop(struct sockaddr_in6 *src6, sctp_route_t *ro)
 {
-    return (0);
+#if defined(__linux__) && !defined(__EMSCRIPTEN__) && defined(INET6)
+	struct sockaddr_storage source;
+	struct sockaddr_in6 *selected;
+
+	if (!sctp_userspace_route_source(ro, &source) || source.ss_family != AF_INET6) {
+		return (0);
+	}
+	selected = (struct sockaddr_in6 *)&source;
+	return (IN6_ARE_ADDR_EQUAL(&src6->sin6_addr, &selected->sin6_addr) &&
+			(!IN6_IS_ADDR_LINKLOCAL(&src6->sin6_addr) ||
+					src6->sin6_scope_id == selected->sin6_scope_id));
+#else
+	return (0);
+#endif
 }
 
+int sctp_v4src_match_nexthop(struct sctp_ifa *sifa, sctp_route_t *ro)
+{
+#if defined(__linux__) && !defined(__EMSCRIPTEN__) && defined(INET)
+	struct sockaddr_storage source;
+
+	return (sctp_userspace_route_source(ro, &source) && source.ss_family == AF_INET &&
+			sifa->address.sin.sin_addr.s_addr ==
+					((struct sockaddr_in *)&source)->sin_addr.s_addr);
+#else
+	return (0);
+#endif
+}
 #endif
