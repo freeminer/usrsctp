@@ -572,6 +572,7 @@ struct sctp_event_subscribe {
 /*
  * read-only options
  */
+#define SCTP_PEER_ACTIVITY             0x00000109 /* read-only sctp_assoc_value */
 #define SCTP_STATUS                     0x00000100
 #define SCTP_GET_PEER_ADDR_INFO         0x00000101
 /* authentication support */

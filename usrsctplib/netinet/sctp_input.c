@@ -4976,6 +4976,10 @@ sctp_process_control(struct mbuf *m, int iphlen, int *offset, int length,
 			SCTP_STAT_INCR(sctps_recvauthmissing);
 			goto next_chunk;
 		}
+		/* This chunk passed association, length and AUTH checks. */
+		if (stcb != NULL) {
+			stcb->asoc.peer_response_sequence++;
+		}
 		switch (ch->chunk_type) {
 		case SCTP_INITIATION:
 			SCTPDBG(SCTP_DEBUG_INPUT3, "SCTP_INIT\n");

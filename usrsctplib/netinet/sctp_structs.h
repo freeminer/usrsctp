@@ -837,6 +837,8 @@ struct sctp_association {
 	struct sctp_asconf_addrhead asconf_queue;
 
 	struct timeval time_entered;	/* time we entered state */
+	/* Per-association received traffic, including heartbeat acknowledgements. */
+	uint32_t peer_response_sequence;
 	struct timeval time_last_rcvd;
 	struct timeval time_last_sent;
 	struct timeval time_last_sat_advance;

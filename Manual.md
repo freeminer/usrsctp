@@ -798,3 +798,17 @@ completes. The callback receives a nonzero warning flag for failures and a messa
 valid for the duration of the call. Callbacks can run concurrently on stack threads;
 they must be thread-safe and must not call back into the stack. Passing NULL
 disables diagnostic output. No callback is installed by default.
+
+## Peer activity
+
+`SCTP_PEER_ACTIVITY` is a read-only socket option using `struct sctp_assoc_value`.
+Set `assoc_id` to the association to query. On success, `assoc_value` contains a
+32-bit sequence incremented when the association receives DATA or control chunks
+that pass the association, chunk-length and required AUTH checks. The counter
+wraps naturally. It is an activity indicator, not an acknowledgement count or an
+authentication guarantee; local send attempts do not increment it.
+
+Applications can poll this sequence to implement a monotonic inactivity deadline
+that also recognizes heartbeat responses on idle connections. A changed sequence
+refreshes the deadline. Timer policy and association closure remain the
+application's responsibility. Invalid association queries return EINVAL.

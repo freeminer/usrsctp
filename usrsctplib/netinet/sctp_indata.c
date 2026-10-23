@@ -2933,6 +2933,8 @@ sctp_process_data(struct mbuf **mm, int iphlen, int *offset, int length,
 				       __LINE__);
 		}
 		stcb->asoc.overall_error_count = 0;
+		/* Count validated DATA as peer activity. */
+		stcb->asoc.peer_response_sequence++;
 		(void)SCTP_GETTIME_TIMEVAL(&stcb->asoc.time_last_rcvd);
 	}
 	/* now service all of the reassm queue if needed */
