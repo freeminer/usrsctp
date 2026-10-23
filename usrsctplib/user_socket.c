@@ -2859,6 +2859,14 @@ sctp_userspace_ip_output(int *result, struct mbuf *o_pak,
 	struct iovec send_iovec[MAXLEN_MBUF_CHAIN];
 	struct msghdr msg_hdr;
 #endif
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+	/* Preserve the SCTP-selected source through UDP encapsulation. */
+	struct in_addr source_address;
+	union {
+		struct cmsghdr alignment;
+		unsigned char bytes[CMSG_SPACE(sizeof(struct in_pktinfo))];
+	} source_control;
+#endif
 	int use_udp_tunneling;
 
 	*result = 0;
@@ -2914,6 +2922,10 @@ sctp_userspace_ip_output(int *result, struct mbuf *o_pak,
 		dst.sin_port = 0;
 	}
 
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+	/* Save before removing the IP header from the mbuf chain. */
+	source_address = ip->ip_src;
+#endif
 	/* tweak the mbuf chain */
 	if (use_udp_tunneling) {
 		m_adj(m, sizeof(struct ip) + sizeof(struct udphdr));
@@ -2942,6 +2954,25 @@ sctp_userspace_ip_output(int *result, struct mbuf *o_pak,
 	msg_hdr.msg_control = NULL;
 	msg_hdr.msg_controllen = 0;
 	msg_hdr.msg_flags = 0;
+
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+	/* Do not let the OS switch to an address the peer does not know yet. */
+	if (use_udp_tunneling && source_address.s_addr != INADDR_ANY) {
+		struct cmsghdr *control;
+		struct in_pktinfo source_info;
+
+		memset(&source_control, 0, sizeof(source_control));
+		memset(&source_info, 0, sizeof(source_info));
+		source_info.ipi_spec_dst = source_address;
+		msg_hdr.msg_control = source_control.bytes;
+		msg_hdr.msg_controllen = sizeof(source_control.bytes);
+		control = CMSG_FIRSTHDR(&msg_hdr);
+		control->cmsg_level = IPPROTO_IP;
+		control->cmsg_type = IP_PKTINFO;
+		control->cmsg_len = CMSG_LEN(sizeof(source_info));
+		memcpy(CMSG_DATA(control), &source_info, sizeof(source_info));
+	}
+#endif
 
 	if ((!use_udp_tunneling) && (SCTP_BASE_VAR(userspace_rawsctp) != -1)) {
 		if (sendmsg(SCTP_BASE_VAR(userspace_rawsctp), &msg_hdr, MSG_DONTWAIT) < 0) {
@@ -3000,6 +3031,14 @@ void sctp_userspace_ip6_output(int *result, struct mbuf *o_pak,
 	struct iovec send_iovec[MAXLEN_MBUF_CHAIN];
 	struct msghdr msg_hdr;
 #endif
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+	/* Preserve the SCTP-selected source through UDP encapsulation. */
+	struct in6_addr source_address;
+	union {
+		struct cmsghdr alignment;
+		unsigned char bytes[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+	} source_control;
+#endif
 	int use_udp_tunneling;
 
 	*result = 0;
@@ -3044,6 +3083,9 @@ void sctp_userspace_ip6_output(int *result, struct mbuf *o_pak,
 	memset((void *)&dst, 0, sizeof(struct sockaddr_in6));
 	dst.sin6_family = AF_INET6;
 	dst.sin6_addr = ip6->ip6_dst;
+	/* sendto needs the zone index for IPv6 link-local destinations. */
+	if (ro != NULL && IN6_IS_ADDR_LINKLOCAL(&dst.sin6_addr))
+		dst.sin6_scope_id = ro->ro_dst.sin6_scope_id;
 #ifdef HAVE_SIN6_LEN
 	dst.sin6_len = sizeof(struct sockaddr_in6);
 #endif
@@ -3054,6 +3096,10 @@ void sctp_userspace_ip6_output(int *result, struct mbuf *o_pak,
 		dst.sin6_port = 0;
 	}
 
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+	/* Save before removing the IP header from the mbuf chain. */
+	source_address = ip6->ip6_src;
+#endif
 	/* tweak the mbuf chain */
 	if (use_udp_tunneling) {
 		m_adj(m, sizeof(struct ip6_hdr) + sizeof(struct udphdr));
@@ -3083,6 +3129,27 @@ void sctp_userspace_ip6_output(int *result, struct mbuf *o_pak,
 	msg_hdr.msg_control = NULL;
 	msg_hdr.msg_controllen = 0;
 	msg_hdr.msg_flags = 0;
+
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+	/* Do not let the OS switch to an address the peer does not know yet. */
+	if (use_udp_tunneling && !IN6_IS_ADDR_UNSPECIFIED(&source_address)) {
+		struct cmsghdr *control;
+		struct in6_pktinfo source_info;
+
+		memset(&source_control, 0, sizeof(source_control));
+		memset(&source_info, 0, sizeof(source_info));
+		source_info.ipi6_addr = source_address;
+		if (IN6_IS_ADDR_LINKLOCAL(&source_address))
+			source_info.ipi6_ifindex = dst.sin6_scope_id;
+		msg_hdr.msg_control = source_control.bytes;
+		msg_hdr.msg_controllen = sizeof(source_control.bytes);
+		control = CMSG_FIRSTHDR(&msg_hdr);
+		control->cmsg_level = IPPROTO_IPV6;
+		control->cmsg_type = IPV6_PKTINFO;
+		control->cmsg_len = CMSG_LEN(sizeof(source_info));
+		memcpy(CMSG_DATA(control), &source_info, sizeof(source_info));
+	}
+#endif
 
 	if ((!use_udp_tunneling) && (SCTP_BASE_VAR(userspace_rawsctp6) != -1)) {
 		if (sendmsg(SCTP_BASE_VAR(userspace_rawsctp6), &msg_hdr, MSG_DONTWAIT)< 0) {
