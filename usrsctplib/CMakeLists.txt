@@ -104,6 +104,7 @@ find_package(Threads)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 list(APPEND usrsctp_root_headers
+	user_addr_monitor.h
 	user_atomic.h
 	user_environment.h
 	user_inpcb.h
@@ -178,6 +179,7 @@ list(APPEND usrsctp_sources
 	netinet6/sctp6_usrreq.c
 	user_environment.c
 	user_mbuf.c
+	user_addr_monitor.c
 	user_recv_thread.c
 	user_socket.c
 )

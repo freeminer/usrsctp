@@ -40,6 +40,7 @@ libusrsctp_la_SOURCES  = user_atomic.h \
                          user_mbuf.c \
                          user_mbuf.h \
                          user_queue.h \
+                         user_addr_monitor.c user_addr_monitor.h \
                          user_recv_thread.c user_recv_thread.h \
                          user_route.h \
                          user_socket.c \
