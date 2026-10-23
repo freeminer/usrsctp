@@ -481,6 +481,7 @@ sctp_process_asconf_set_primary(struct sockaddr *src,
 				struct sctp_tcb *stcb, int response_required)
 {
 	struct mbuf *m_reply = NULL;
+	struct sctp_nets *requested;
 	union sctp_sockstore store;
 	struct sctp_paramhdr *ph;
 	uint16_t param_type, aparam_length;
@@ -581,6 +582,17 @@ sctp_process_asconf_set_primary(struct sockaddr *src,
 		}
 		if (response_required) {
 			m_reply = sctp_asconf_success_response(aph->correlation_id);
+		}
+		requested = sctp_findnet(stcb, sa);
+		if (requested != NULL &&
+		    ((requested->dest_state & SCTP_ADDR_UNCONFIRMED) ||
+		     !(requested->dest_state & SCTP_ADDR_REACHABLE))) {
+			/* Do not wait for a backed-off heartbeat after a handoff. */
+			sctp_send_hb(stcb, requested, SCTP_SO_NOT_LOCKED);
+			if (requested->dest_state & SCTP_ADDR_UNCONFIRMED) {
+				/* HEARTBEAT-ACK completes the deferred primary change. */
+				return (m_reply);
+			}
 		}
 		/* Mobility adaptation.
 		   Ideally, when the reception of SET PRIMARY with DELETE IP
@@ -1685,7 +1697,20 @@ sctp_asconf_process_param_ack(struct sctp_tcb *stcb,
 	case SCTP_DEL_IP_ADDRESS:
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
 			"process_param_ack: deleted IP address\n");
-		/* nothing really to do... lists already updated */
+		if (flag && stcb->asoc.primary_destination != NULL &&
+		    (sctp_is_mobility_feature_on(stcb->sctp_ep, SCTP_MOBILITY_BASE) ||
+		     sctp_is_mobility_feature_on(stcb->sctp_ep, SCTP_MOBILITY_FASTHANDOFF))) {
+			struct sctp_nets *primary = stcb->asoc.primary_destination;
+			struct sctp_ifa *source;
+
+			/* Prefer a surviving source already acknowledged by the peer. */
+			source = sctp_source_address_selection(stcb->sctp_ep, stcb,
+			    (sctp_route_t *)&primary->ro, primary, 0, stcb->asoc.vrf_id);
+			if (source != NULL) {
+				(void)sctp_asconf_queue_mgmt(stcb, source, SCTP_SET_PRIM_ADDR);
+				sctp_free_ifa(source);
+			}
+		}
 		break;
 	case SCTP_SET_PRIM_ADDR:
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
