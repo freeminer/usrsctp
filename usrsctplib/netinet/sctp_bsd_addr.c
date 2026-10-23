@@ -176,7 +176,16 @@ sctp_startup_iterator(void)
 		/* You only get one */
 		return;
 	}
-	/* Initialize global locks here, thus only once. */
+#if defined(__Userspace__)
+	/* Shutdown leaves MUST_EXIT/EXITED set in this non-VNET control block.
+	 * Reset it before creating the worker for a new stack instance.
+	 * A previous worker has been joined before thread_proc is cleared.
+	 */
+	sctp_it_ctl.iterator_flags = 0;
+	sctp_it_ctl.iterator_running = 0;
+	sctp_it_ctl.cur_it = NULL;
+#endif
+	/* Initialize locks before starting the worker. */
 	SCTP_ITERATOR_LOCK_INIT();
 	SCTP_IPI_ITERATOR_WQ_INIT();
 	TAILQ_INIT(&sctp_it_ctl.iteratorhead);
