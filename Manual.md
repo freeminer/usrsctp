@@ -784,3 +784,17 @@ M. Tüxen and R. Stewart</br>
 M. Tüxen, I. Rüngeler, and R. Stewart:</br>
 `SACK-IMMEDIATELY Extension for the Stream Control Transmission Protocol`</br>
 [RFC 7053](https://tools.ietf.org/html/rfc7053), November 2013.
+
+## Address monitoring and diagnostics
+
+On Linux, the threaded stack polls interface addresses once per second and
+announces eligible additions and removals through automatic ASCONF. Polling does
+not require routing-socket privileges. Applications must enable AUTH, ASCONF and
+automatic ASCONF before binding sockets that use dynamic addresses.
+
+`usrsctp_set_diagnostic_logger(callback)` installs an optional diagnostic callback.
+Register it before `usrsctp_init()` and change it only after `usrsctp_finish()`
+completes. The callback receives a nonzero warning flag for failures and a message
+valid for the duration of the call. Callbacks can run concurrently on stack threads;
+they must be thread-safe and must not call back into the stack. Passing NULL
+disables diagnostic output. No callback is installed by default.
