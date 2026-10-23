@@ -3302,6 +3302,23 @@ sctp_getopt(struct socket *so, int optname, void *optval, size_t *optsize,
 		*optsize = sizeof(struct sctp_pcbinfo);
 		break;
 	}
+	/* Read-only per-association received-traffic sequence. */
+	case SCTP_PEER_ACTIVITY:
+	{
+		struct sctp_assoc_value *activity;
+
+		SCTP_CHECK_AND_CAST(activity, optval, struct sctp_assoc_value, *optsize);
+		SCTP_FIND_STCB(inp, stcb, activity->assoc_id);
+		if (stcb == NULL) {
+			error = EINVAL;
+			break;
+		}
+		activity->assoc_id = sctp_get_associd(stcb);
+		activity->assoc_value = stcb->asoc.peer_response_sequence;
+		*optsize = sizeof(*activity);
+		SCTP_TCB_UNLOCK(stcb);
+		break;
+	}
 	case SCTP_STATUS:
 	{
 		struct sctp_nets *net;

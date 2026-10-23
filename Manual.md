@@ -784,3 +784,17 @@ M. Tüxen and R. Stewart</br>
 M. Tüxen, I. Rüngeler, and R. Stewart:</br>
 `SACK-IMMEDIATELY Extension for the Stream Control Transmission Protocol`</br>
 [RFC 7053](https://tools.ietf.org/html/rfc7053), November 2013.
+
+## Peer activity
+
+`SCTP_PEER_ACTIVITY` is a read-only socket option using `struct sctp_assoc_value`.
+Set `assoc_id` to the association to query. On success, `assoc_value` contains a
+32-bit sequence incremented when the association receives DATA or control chunks
+that pass the association, chunk-length and required AUTH checks. The counter
+wraps naturally. It is an activity indicator, not an acknowledgement count or an
+authentication guarantee; local send attempts do not increment it.
+
+Applications can poll this sequence to implement a monotonic inactivity deadline
+that also recognizes heartbeat responses on idle connections. A changed sequence
+refreshes the deadline. Timer policy and association closure remain the
+application's responsibility. Invalid association queries return EINVAL.
