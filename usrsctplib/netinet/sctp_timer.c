@@ -1001,6 +1001,9 @@ sctp_t3rxt_timer(struct sctp_inpcb *inp,
 		sctp_timer_start(SCTP_TIMER_TYPE_SEND, inp, stcb, net);
 		return (0);
 	}
+	if (!win_probe && net == stcb->asoc.primary_destination) {
+		sctp_send_asconf(stcb, net, SCTP_ADDR_NOT_LOCKED);
+	}
 	if (stcb->asoc.prsctp_supported) {
 		struct sctp_tmit_chunk *lchk;
 
@@ -1451,6 +1454,12 @@ sctp_heartbeat_timer(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 			/* Assoc is over */
 			return (1);
 		}
+	}
+	/* A return to a known source may still receive SACKs on an old path.
+	 * Refresh periodically even when DATA traffic suppresses heartbeats. */
+	if (net == stcb->asoc.primary_destination &&
+	    !(net->dest_state & SCTP_ADDR_UNCONFIRMED)) {
+		sctp_send_asconf(stcb, net, SCTP_ADDR_NOT_LOCKED);
 	}
 	/* Zero PBA, if it needs it */
 	if (net->partial_bytes_acked > 0) {

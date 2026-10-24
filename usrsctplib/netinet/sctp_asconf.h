@@ -40,13 +40,15 @@
 /*
  * function prototypes
  */
+extern void sctp_asconf_queue_source_update(struct sctp_tcb *, struct sctp_nets *);
+
 extern void sctp_asconf_cleanup(struct sctp_tcb *);
 
 extern struct mbuf *sctp_compose_asconf(struct sctp_tcb *, int *, int);
 
 extern void
 sctp_handle_asconf(struct mbuf *, unsigned int, struct sockaddr *,
-                   struct sctp_asconf_chunk *, struct sctp_tcb *, int);
+                   struct sctp_asconf_chunk *, struct sctp_tcb *, uint16_t, int);
 
 extern void
 sctp_handle_asconf_ack(struct mbuf *, int, struct sctp_asconf_ack_chunk *,

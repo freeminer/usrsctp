@@ -5475,7 +5475,7 @@ sctp_process_control(struct mbuf *m, int iphlen, int *offset, int length,
 					goto unknown_chunk;
 				}
 				sctp_handle_asconf(m, *offset, src,
-				                   (struct sctp_asconf_chunk *)ch, stcb, asconf_cnt == 0);
+				                   (struct sctp_asconf_chunk *)ch, stcb, port, asconf_cnt == 0);
 				asconf_cnt++;
 			}
 			break;
