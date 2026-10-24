@@ -34,6 +34,9 @@
 
 #define _IP_VHL
 #include <netinet/sctp_os.h>
+#if defined(__Userspace__)
+#include "user_addr_monitor.h"
+#endif
 #include <netinet/sctp_pcb.h>
 #if defined(__FreeBSD__) && defined(__Userspace__)
 #ifdef INET6
@@ -154,6 +157,18 @@ sctp_threshold_management(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		/* Abort notification sends a ULP notify */
 		struct mbuf *op_err;
 
+#if defined(__Userspace__)
+		{
+			char message[192];
+
+			snprintf(message, sizeof(message),
+			    "association retransmission limit exceeded assoc=%u errors=%u limit=%u path_errors=%u",
+			    (unsigned)stcb->asoc.assoc_id,
+			    (unsigned)stcb->asoc.overall_error_count, (unsigned)threshold,
+			    net != NULL ? (unsigned)net->error_count : 0);
+			sctp_diagnostic(1, message);
+		}
+#endif
 		op_err = sctp_generate_cause(SCTP_BASE_SYSCTL(sctp_diag_info_code),
 		                             "Association error counter exceeded");
 		inp->last_abort_code = SCTP_FROM_SCTP_TIMER + SCTP_LOC_2;
