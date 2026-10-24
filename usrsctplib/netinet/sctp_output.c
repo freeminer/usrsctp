@@ -9968,6 +9968,10 @@ sctp_send_asconf(struct sctp_tcb *stcb, struct sctp_nets *net, int addr_locked)
 		return;
 	}
 
+	/* Include the observed source before ordinary address changes. */
+	sctp_asconf_queue_source_update(stcb, net != NULL ? net :
+	    stcb->asoc.primary_destination);
+
 	/* compose an ASCONF chunk, maximum length is PMTU */
 	m_asconf = sctp_compose_asconf(stcb, &len, addr_locked);
 	if (m_asconf == NULL) {

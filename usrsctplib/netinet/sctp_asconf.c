@@ -171,7 +171,7 @@ sctp_asconf_error_response(uint32_t id, uint16_t cause, uint8_t *error_tlv,
 
 static struct mbuf *
 sctp_process_asconf_add_ip(struct sockaddr *src, struct sctp_asconf_paramhdr *aph,
-                           struct sctp_tcb *stcb, int send_hb, int response_required)
+                           struct sctp_tcb *stcb, uint16_t port, int send_hb, int response_required)
 {
 	struct sctp_nets *net;
 	struct mbuf *m_reply = NULL;
@@ -277,7 +277,8 @@ sctp_process_asconf_add_ip(struct sockaddr *src, struct sctp_asconf_paramhdr *ap
 		m_reply = sctp_asconf_error_response(aph->correlation_id,
 		    SCTP_CAUSE_INVALID_PARAM, (uint8_t *) aph,
 		    aparam_length);
-	} else if (sctp_add_remote_addr(stcb, sa, &net, stcb->asoc.port,
+	} else if (sctp_add_remote_addr(stcb, sa, &net,
+	                                zero_address ? port : stcb->asoc.port,
 	                                SCTP_DONOT_SETSCOPE,
 	                                SCTP_ADDR_DYNAMIC_ADDED) != 0) {
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
@@ -651,7 +652,7 @@ void
 sctp_handle_asconf(struct mbuf *m, unsigned int offset,
                    struct sockaddr *src,
 		   struct sctp_asconf_chunk *cp, struct sctp_tcb *stcb,
-		   int first)
+		   uint16_t port, int first)
 {
 	struct sctp_association *asoc;
 	uint32_t serial_num;
@@ -782,7 +783,7 @@ sctp_handle_asconf(struct mbuf *m, unsigned int offset,
 		}
 		switch (param_type) {
 		case SCTP_ADD_IP_ADDRESS:
-			m_result = sctp_process_asconf_add_ip(src, aph, stcb,
+			m_result = sctp_process_asconf_add_ip(src, aph, stcb, port,
 			    (cnt < SCTP_BASE_SYSCTL(sctp_hb_maxburst)), error);
 			cnt++;
 			break;
@@ -866,22 +867,11 @@ sctp_handle_asconf(struct mbuf *m, unsigned int offset,
 	}
 	TAILQ_INSERT_TAIL(&stcb->asoc.asconf_ack_sent, ack, next);
 
-	/* see if last_control_chunk_from is set properly (use IP src addr) */
-	if (stcb->asoc.last_control_chunk_from == NULL) {
-		/*
-		 * this could happen if the source address was just newly
-		 * added
-		 */
-		SCTPDBG(SCTP_DEBUG_ASCONF1, "handle_asconf: looking up net for IP source address\n");
-		SCTPDBG(SCTP_DEBUG_ASCONF1, "Looking for IP source: ");
-		SCTPDBG_ADDR(SCTP_DEBUG_ASCONF1, src);
-		/* look up the from address */
-		stcb->asoc.last_control_chunk_from = sctp_findnet(stcb, src);
-#ifdef SCTP_DEBUG
-		if (stcb->asoc.last_control_chunk_from == NULL) {
-			SCTPDBG(SCTP_DEBUG_ASCONF1, "handle_asconf: IP source address not found?!\n");
-		}
-#endif
+	/* An ASCONF lookup may have found a different, old peer path.
+	 * Reply to the authenticated packet source, including its UDP port. */
+	stcb->asoc.last_control_chunk_from = sctp_findnet(stcb, src);
+	if (stcb->asoc.last_control_chunk_from != NULL) {
+		stcb->asoc.last_control_chunk_from->port = port;
 	}
 }
 
@@ -1243,6 +1233,10 @@ sctp_path_check_and_react(struct sctp_tcb *stcb, struct sctp_ifa *newifa)
 static void
 sctp_asconf_addr_mgmt_ack(struct sctp_tcb *stcb, struct sctp_ifa *addr, uint32_t flag)
 {
+	/* Wildcard source updates have no local interface address. */
+	if (addr == NULL) {
+		return;
+	}
 	/*
 	 * do the necessary asoc list work- if we get a failure indication,
 	 * leave the address on the assoc's restricted list.  If we get a
@@ -2727,11 +2721,14 @@ sctp_compose_asconf(struct sctp_tcb *stcb, int *retlen, int addr_locked)
 		 * way for us to fill in the correlation address, which
 		 * should only be used by the peer if we're deleting our
 		 * source address and adding a new address (e.g. renumbering
-		 * case)
+		 * case). Wildcard ADD uses the zero lookup address so a NAT
+		 * source change can be matched by verification tag before AUTH.
 		 */
 		if (lookup_used == 0 &&
 		    (aa->special_del == 0) &&
-		    aa->ap.aph.ph.param_type == SCTP_DEL_IP_ADDRESS) {
+		    (aa->ap.aph.ph.param_type == SCTP_DEL_IP_ADDRESS ||
+		     (aa->ap.aph.ph.param_type == SCTP_ADD_IP_ADDRESS &&
+		      aa->ifa == NULL))) {
 			struct sctp_ipv6addr_param *lookup;
 			uint16_t p_size, addr_size;
 
@@ -3576,4 +3573,66 @@ out:
  skip_rest:
 	/* Now we must send the asconf into the queue */
 	sctp_send_asconf(stcb, net, SCTP_ADDR_NOT_LOCKED);
+}
+
+/*
+ * Refresh the observed source after a UDP mapping change. Unlike NAT state
+ * repair, this does not delete other paths: they may still be usable.
+ * Only authenticated ASCONF can associate the new source with this peer.
+ */
+void
+sctp_asconf_queue_source_update(struct sctp_tcb *stcb, struct sctp_nets *net)
+{
+	struct sctp_asconf_addr *add, *primary, *pending;
+	uint16_t type, length, address_length;
+
+	if (net == NULL || SCTP_GET_STATE(stcb) != SCTP_STATE_OPEN ||
+	    !SCTP_BASE_SYSCTL(sctp_mobility_base) ||
+	    net->port == 0 || !stcb->asoc.peer_supports_nat ||
+	    !stcb->asoc.auth_supported || !stcb->asoc.asconf_supported ||
+	    !TAILQ_EMPTY(&stcb->asoc.asconf_send_queue)) {
+		return;
+	}
+	TAILQ_FOREACH(pending, &stcb->asoc.asconf_queue, next) {
+		if (pending->ifa == NULL &&
+		    pending->ap.aph.ph.param_type == SCTP_ADD_IP_ADDRESS) {
+			return;
+		}
+	}
+	switch (net->ro._l_addr.sa.sa_family) {
+#ifdef INET
+	case AF_INET:
+		type = SCTP_IPV4_ADDRESS;
+		length = sizeof(struct sctp_asconf_addrv4_param);
+		address_length = sizeof(struct sctp_ipv4addr_param);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		type = SCTP_IPV6_ADDRESS;
+		length = sizeof(struct sctp_asconf_addr_param);
+		address_length = sizeof(struct sctp_ipv6addr_param);
+		break;
+#endif
+	default:
+		return;
+	}
+	SCTP_MALLOC(add, struct sctp_asconf_addr *, sizeof(*add), SCTP_M_ASC_ADDR);
+	if (add == NULL) {
+		return;
+	}
+	SCTP_MALLOC(primary, struct sctp_asconf_addr *, sizeof(*primary), SCTP_M_ASC_ADDR);
+	if (primary == NULL) {
+		SCTP_FREE(add, SCTP_M_ASC_ADDR);
+		return;
+	}
+	memset(add, 0, sizeof(*add));
+	add->ap.aph.ph.param_type = SCTP_ADD_IP_ADDRESS;
+	add->ap.aph.ph.param_length = length;
+	add->ap.addrp.ph.param_type = type;
+	add->ap.addrp.ph.param_length = address_length;
+	*primary = *add;
+	primary->ap.aph.ph.param_type = SCTP_SET_PRIM_ADDR;
+	TAILQ_INSERT_HEAD(&stcb->asoc.asconf_queue, add, next);
+	TAILQ_INSERT_TAIL(&stcb->asoc.asconf_queue, primary, next);
 }
