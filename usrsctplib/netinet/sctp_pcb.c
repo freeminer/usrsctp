@@ -7464,6 +7464,17 @@ sctp_load_addresses_from_init(struct sctp_tcb *stcb, struct mbuf *m,
 	TAILQ_FOREACH_SAFE(net, &stcb->asoc.nets, sctp_next, nnet) {
 		if ((net->dest_state & SCTP_ADDR_NOT_IN_ASSOC) ==
 		    SCTP_ADDR_NOT_IN_ASSOC) {
+			/* A NAT's public address supplied to connectx is not
+			 * necessarily among the peer's local interface addresses.
+			 * Keep initial UDP candidates for mobility, but require
+			 * path verification before using them for DATA. */
+			if (SCTP_GET_STATE(stcb) == SCTP_STATE_COOKIE_WAIT &&
+			    SCTP_BASE_SYSCTL(sctp_mobility_base) &&
+			    stcb->asoc.peer_supports_nat && net->port != 0) {
+				net->dest_state &= ~SCTP_ADDR_NOT_IN_ASSOC;
+				net->dest_state |= SCTP_ADDR_UNCONFIRMED;
+				continue;
+			}
 			/* This address has been removed from the asoc */
 			/* remove and free it */
 			stcb->asoc.numnets--;

@@ -1249,6 +1249,34 @@ sctp_asconf_timer(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		 */
 		sctp_backoff_on_timeout(stcb, net, 1, 0, 0);
 		alt = sctp_find_alternate_net(stcb, net, 0);
+		if (net->port != 0 && SCTP_BASE_SYSCTL(sctp_mobility_base) &&
+		    stcb->asoc.peer_supports_nat && stcb->asoc.auth_supported) {
+			struct sctp_nets *candidate;
+			unsigned int i;
+
+			/* A new address family may have no confirmed path yet.
+			 * Probe it with authenticated ASCONF, never with DATA.
+			 * A HEARTBEAT alone cannot identify a new NAT source. */
+			if (net->dest_state & SCTP_ADDR_BEING_DELETED) {
+				candidate = TAILQ_FIRST(&stcb->asoc.nets);
+			} else {
+				candidate = TAILQ_NEXT(net, sctp_next);
+			}
+			if (candidate == NULL) {
+				candidate = TAILQ_FIRST(&stcb->asoc.nets);
+			}
+			for (i = 0; candidate != NULL && i < stcb->asoc.numnets; i++) {
+				if (candidate != net && candidate->port != 0 &&
+				    !(candidate->dest_state & SCTP_ADDR_BEING_DELETED)) {
+					alt = candidate;
+					break;
+				}
+				candidate = TAILQ_NEXT(candidate, sctp_next);
+				if (candidate == NULL) {
+					candidate = TAILQ_FIRST(&stcb->asoc.nets);
+				}
+			}
+		}
 		/* Keep net alive while moving chunks, even if alt == net. */
 		atomic_add_int(&net->ref_count, 1);
 		if (asconf->whoTo != alt) {
