@@ -1249,7 +1249,10 @@ sctp_asconf_timer(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 		 */
 		sctp_backoff_on_timeout(stcb, net, 1, 0, 0);
 		alt = sctp_find_alternate_net(stcb, net, 0);
+		/* Keep net alive while moving chunks, even if alt == net. */
+		atomic_add_int(&net->ref_count, 1);
 		if (asconf->whoTo != alt) {
+			sctp_free_remote_addr(asconf->whoTo);
 			asconf->whoTo = alt;
 			atomic_add_int(&alt->ref_count, 1);
 		}
