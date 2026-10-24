@@ -25,3 +25,16 @@ For memory-safety checks, build the library with
 test. Set `ASAN_OPTIONS=detect_leaks=0`: endpoints are deliberately terminated
 after the data assertions, without testing graceful stack teardown.
 `SCTP_TEST_TRACE=1` prints packet chunk types and endpoint diagnostics.
+
+## IPv6/IPv4 handoff
+
+```sh
+python3 tests/udp_dualstack.py build/usrsctplib/libusrsctp.a
+```
+
+This uses dual-stack sockets and connectx candidates, then drops all relay
+traffic for one address family at a time. It requires application echoes over
+IPv6, IPv4, IPv6, and IPv4 on the original association. The relay's IPv4 address
+is not a server interface address, reproducing a public NAT endpoint missing
+from INIT-ACK. IPv4 probing must contain AUTH and ASCONF; DATA must wait for
+HEARTBEAT-ACK path verification. Sanitizer flags above also apply to this test.

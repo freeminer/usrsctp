@@ -33,12 +33,13 @@ int main(int argc, char **argv)
 	struct sctp_udpencaps encaps;
 	struct sctp_assocparams association;
 	struct sctp_rtoinfo rto;
-	int server, tick, family, one = 1;
+	int server, tick, family, dual, one = 1;
 
 	if (argc != 5)
 		return 2;
 	server = strcmp(argv[1], "server") == 0;
-	family = strcmp(argv[4], "6") == 0 ? AF_INET6 : AF_INET;
+	dual = strcmp(argv[4], "dual") == 0;
+	family = dual || strcmp(argv[4], "6") == 0 ? AF_INET6 : AF_INET;
 	address_length = family == AF_INET6 ? sizeof(*address6) : sizeof(*address4);
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	usrsctp_set_diagnostic_logger(diagnostic);
@@ -75,7 +76,7 @@ int main(int argc, char **argv)
 	memset(&address, 0, sizeof(address));
 	if (family == AF_INET6) {
 		address6->sin6_family = AF_INET6;
-		address6->sin6_addr = in6addr_loopback;
+		address6->sin6_addr = dual ? in6addr_any : in6addr_loopback;
 		address6->sin6_port = htons(server ? 5001 : 5002);
 	} else {
 		address4->sin_family = AF_INET;
@@ -93,9 +94,33 @@ int main(int argc, char **argv)
 			address6->sin6_port = htons(5001);
 		else
 			address4->sin_port = htons(5001);
-		if (usrsctp_connect(sock, (struct sockaddr *)&address, address_length) < 0 &&
-				errno != EINPROGRESS)
+		if (dual) {
+			union
+			{
+				struct sockaddr_storage alignment;
+				unsigned char
+						bytes[sizeof(struct sockaddr_in6) + sizeof(struct sockaddr_in)];
+			} peers;
+			struct sockaddr_in6 first;
+			struct sockaddr_in second;
+			memset(&first, 0, sizeof(first));
+			first.sin6_family = AF_INET6;
+			first.sin6_addr = in6addr_loopback;
+			first.sin6_port = htons(5001);
+			memset(&second, 0, sizeof(second));
+			second.sin_family = AF_INET;
+			inet_pton(AF_INET, "127.0.0.2", &second.sin_addr);
+			second.sin_port = htons(5001);
+			memcpy(peers.bytes, &first, sizeof(first));
+			memcpy(peers.bytes + sizeof(first), &second, sizeof(second));
+			if (usrsctp_connectx(sock, (struct sockaddr *)peers.bytes, 2, NULL) < 0 &&
+					errno != EINPROGRESS)
+				check(-1, "connectx");
+		} else if (usrsctp_connect(sock, (struct sockaddr *)&address, address_length) <
+						   0 &&
+				   errno != EINPROGRESS) {
 			check(-1, "connect");
+		}
 	}
 	puts("READY");
 	for (tick = 0; tick < 3000; ++tick) {
