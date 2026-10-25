@@ -645,6 +645,103 @@ sctp_process_asconf_set_primary(struct sockaddr *src,
 }
 
 /*
+ * Wildcard address parameters identify the authenticated packet source.
+ * Address fields are in network byte order.
+ */
+static int
+sctp_asconf_is_wildcard(struct sctp_asconf_paramhdr *aph, unsigned int length)
+{
+	struct sctp_paramhdr *ph;
+
+	if (length < sizeof(*aph) + sizeof(*ph)) {
+		return (0);
+	}
+	ph = (struct sctp_paramhdr *)(aph + 1);
+#ifdef INET
+	if (length == sizeof(struct sctp_asconf_addrv4_param) &&
+	    ntohs(ph->param_type) == SCTP_IPV4_ADDRESS &&
+	    ntohs(ph->param_length) == sizeof(struct sctp_ipv4addr_param)) {
+		return (((struct sctp_ipv4addr_param *)ph)->addr == INADDR_ANY);
+	}
+#endif
+#ifdef INET6
+	if (length == sizeof(struct sctp_asconf_addr_param) &&
+	    ntohs(ph->param_type) == SCTP_IPV6_ADDRESS &&
+	    ntohs(ph->param_length) == sizeof(struct sctp_ipv6addr_param)) {
+		struct in6_addr address;
+
+		memcpy(&address, ((struct sctp_ipv6addr_param *)ph)->addr,
+		    sizeof(address));
+		return (IN6_IS_ADDR_UNSPECIFIED(&address));
+	}
+#endif
+	return (0);
+}
+
+/*
+ * An acknowledged ASCONF can be retransmitted from a new NAT mapping if its
+ * ACK was lost with the old network. Reply to that source without adding it
+ * as a peer path or replaying operations. A fresh ASCONF serial must announce
+ * the new address before it can carry DATA.
+ */
+static void
+sctp_asconf_reply_to_duplicate(struct mbuf *m, unsigned int offset,
+    struct sctp_asconf_chunk *cp, struct sockaddr *src,
+    struct sctp_tcb *stcb, uint16_t port)
+{
+	struct sctp_asconf_ack *ack;
+	struct sctp_asconf_paramhdr *aph;
+	struct sctp_paramhdr *lookup;
+	uint8_t buffer[SCTP_PARAM_BUFFER_SIZE];
+	unsigned int limit, length, type;
+
+	if (port == 0 || !sctp_is_nat_mobility(stcb) ||
+	    !stcb->asoc.authenticated) {
+		return;
+	}
+	TAILQ_FOREACH(ack, &stcb->asoc.asconf_ack_sent, next) {
+		if (ack->serial_number == ntohl(cp->serial_number)) {
+			break;
+		}
+	}
+	if (ack == NULL) {
+		return;
+	}
+	limit = offset + ntohs(cp->ch.chunk_length);
+	offset += sizeof(*cp);
+	lookup = (struct sctp_paramhdr *)sctp_m_getptr(m, offset,
+	    sizeof(*lookup), buffer);
+	if (lookup == NULL || ntohs(lookup->param_length) < sizeof(*lookup)) {
+		return;
+	}
+	offset += SCTP_SIZE32(ntohs(lookup->param_length));
+	while (offset + sizeof(*aph) <= limit) {
+		aph = (struct sctp_asconf_paramhdr *)sctp_m_getptr(m, offset,
+		    sizeof(*aph), buffer);
+		if (aph == NULL) {
+			return;
+		}
+		length = ntohs(aph->ph.param_length);
+		type = ntohs(aph->ph.param_type);
+		if (length < sizeof(*aph) || length > sizeof(buffer) ||
+		    length > limit - offset) {
+			return;
+		}
+		aph = (struct sctp_asconf_paramhdr *)sctp_m_getptr(m, offset,
+		    length, buffer);
+		if (aph == NULL) {
+			return;
+		}
+		if (type == SCTP_ADD_IP_ADDRESS &&
+		    sctp_asconf_is_wildcard(aph, length)) {
+			sctp_send_asconf_ack_direct(stcb, ack, src, port);
+			return;
+		}
+		offset += SCTP_SIZE32(length);
+	}
+}
+
+/*
  * handles an ASCONF chunk.
  * if all parameters are processed ok, send a plain (empty) ASCONF-ACK
  */
@@ -678,6 +775,10 @@ sctp_handle_asconf(struct mbuf *m, unsigned int offset,
 	serial_num = ntohl(cp->serial_number);
 
 	if (SCTP_TSN_GE(asoc->asconf_seq_in, serial_num)) {
+		/* Re-send the latest cached ACK to the authenticated source. */
+		if (serial_num == asoc->asconf_seq_in) {
+			sctp_asconf_reply_to_duplicate(m, offset, cp, src, stcb, port);
+		}
 		/* got a duplicate ASCONF */
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
 			"handle_asconf: got duplicate serial number = %xh\n",
@@ -2496,28 +2597,9 @@ sctp_is_addr_pending(struct sctp_tcb *stcb, struct sctp_ifa *sctp_ifa)
 			/* A wildcard ADD announces whichever source carries this
 			 * authenticated ASCONF, including a newly restricted IFA. */
 			if (param_type == SCTP_ADD_IP_ADDRESS &&
-			    sctp_is_nat_mobility(stcb)) {
-#ifdef INET
-				if (param_length >= sizeof(struct sctp_asconf_addrv4_param) &&
-				    ntohs(ph->param_type) == SCTP_IPV4_ADDRESS &&
-				    ntohs(ph->param_length) == sizeof(struct sctp_ipv4addr_param) &&
-				    ((struct sctp_ipv4addr_param *)ph)->addr == INADDR_ANY) {
-					return (1);
-				}
-#endif
-#ifdef INET6
-				if (param_length >= sizeof(struct sctp_asconf_addr_param) &&
-				    ntohs(ph->param_type) == SCTP_IPV6_ADDRESS &&
-				    ntohs(ph->param_length) == sizeof(struct sctp_ipv6addr_param)) {
-					struct in6_addr address;
-
-					memcpy(&address, ((struct sctp_ipv6addr_param *)ph)->addr,
-					    sizeof(address));
-					if (IN6_IS_ADDR_UNSPECIFIED(&address)) {
-						return (1);
-					}
-				}
-#endif
+			    sctp_is_nat_mobility(stcb) &&
+			    sctp_asconf_is_wildcard(aph, param_length)) {
+				return (1);
 			}
 			if (sctp_addr_match(ph, &sctp_ifa->address.sa) != 0) {
 				switch (param_type) {
@@ -3620,11 +3702,7 @@ out:
 	sctp_send_asconf(stcb, net, SCTP_ADDR_NOT_LOCKED);
 }
 
-/*
- * Refresh the observed source after a UDP mapping change. Unlike NAT state
- * repair, this does not delete other paths: they may still be usable.
- * Only authenticated ASCONF can associate the new source with this peer.
- */
+/* Restrict source bootstrapping to authenticated UDP mobility peers. */
 int
 sctp_is_nat_mobility(struct sctp_tcb *stcb)
 {
@@ -3635,6 +3713,11 @@ sctp_is_nat_mobility(struct sctp_tcb *stcb)
 	    stcb->asoc.primary_destination->port != 0);
 }
 
+/*
+ * Refresh the observed source after a UDP mapping change. Unlike NAT state
+ * repair, this does not delete other paths: they may still be usable.
+ * Only authenticated ASCONF can associate the new source with this peer.
+ */
 void
 sctp_asconf_queue_source_update(struct sctp_tcb *stcb, struct sctp_nets *net)
 {

@@ -120,6 +120,8 @@ void sctp_send_shutdown_complete2(struct sockaddr *, struct sockaddr *,
 void sctp_send_asconf(struct sctp_tcb *, struct sctp_nets *, int addr_locked);
 
 void sctp_send_asconf_ack(struct sctp_tcb *);
+void sctp_send_asconf_ack_direct(struct sctp_tcb *,
+    const struct sctp_asconf_ack *, struct sockaddr *, uint16_t);
 
 uint32_t sctp_get_frag_point(struct sctp_tcb *);
 
