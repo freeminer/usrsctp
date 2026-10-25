@@ -26,7 +26,8 @@ if PRIVATE:
         route.connect(("192.0.2.1", 9))  # Route query only; no packet is sent.
         IPV4 = TARGET4 = route.getsockname()[0]
     assert any(ipaddress.ip_address(IPV4) in ipaddress.ip_network(network)
-               for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")),         "private-source test needs a local RFC1918 IPv4 address"
+               for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")), (
+                   "private-source test needs a local RFC1918 IPv4 address")
     os.environ["SCTP_TEST_IPV4"] = IPV4
 
 
@@ -46,6 +47,18 @@ def chunks(data):
         if length < 4 or offset + length > len(data):
             break
         yield kind
+        offset += (length + 3) & ~3
+
+
+
+def asconf_serials(data):
+    offset = 12
+    while offset + 8 <= len(data):
+        kind, _, length = struct.unpack_from("!BBH", data, offset)
+        if length < 4 or offset + length > len(data):
+            break
+        if kind == 193 and length >= 8:
+            yield struct.unpack_from("!I", data, offset + 4)[0]
         offset += (length + 3) & ~3
 
 
@@ -77,6 +90,8 @@ def run(binary):
         source_acked4 = False
         auth_probes = 0
         lost_ack = False
+        serials6 = set()
+        fresh4 = False
         deadline = time.monotonic() + 12
         while phase < 4 and time.monotonic() < deadline:
             active6 = phase % 2 == 0
@@ -95,14 +110,18 @@ def run(binary):
                     continue
                 data, _ = sock.recvfrom(65535)
                 if sock is front6 and active6:
+                    serials6.update(asconf_serials(data))
                     back6.sendto(data, ("::1", server_port))
                 elif sock is front4 and not active6:
                     kinds = list(chunks(data))
+                    if any(serial not in serials6 for serial in asconf_serials(data)):
+                        fresh4 = True
                     if 193 in kinds:
                         assert 15 in kinds, "ASCONF probe must be authenticated"
                         auth_probes += 1
                     permitted = source_acked4 if PRIVATE else confirmed4
-                    assert permitted or not any(kind in (0, 64) for kind in kinds),                         "DATA sent before IPv4 source/path verification"
+                    assert permitted or not any(kind in (0, 64) for kind in kinds), (
+                        "DATA sent before IPv4 source/path verification")
                     back4.sendto(data, (TARGET4, server_port))
                 elif sock is back6 and active6:
                     if LOST_ACK and phase == 0 and last_rx > 50 and 128 in chunks(data):
@@ -111,6 +130,10 @@ def run(binary):
                     front6.sendto(data, ("::1", client_port))
                 elif sock is back4 and not active6:
                     kinds = list(chunks(data))
+                    if LOST_ACK and not PRIVATE and not fresh4:
+                        assert all(kind in (15, 128) for kind in kinds), (
+                            "duplicate ASCONF must only return a cached ACK, "
+                            "not validate a new source or send DATA")
                     if 5 in kinds:
                         confirmed4 = True
                     if 128 in kinds:
@@ -126,6 +149,7 @@ def run(binary):
                 deadline = time.monotonic() + 12
         assert phase == 4, f"family handoff {phase} failed; last echo {last_rx}"
         assert not LOST_ACK or lost_ack, "lost ASCONF-ACK was not exercised"
+        assert fresh4, "a fresh ASCONF must announce the IPv4 source"
         assert auth_probes > 0, "IPv4 ASCONF probing was not exercised"
         assert (source_acked4 if PRIVATE else confirmed4), "IPv4 source/path was never verified"
         print("PASS: authenticated IPv4 probing and path verification before DATA",

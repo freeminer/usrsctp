@@ -10004,6 +10004,46 @@ sctp_send_asconf(struct sctp_tcb *stcb, struct sctp_nets *net, int addr_locked)
 	return;
 }
 
+/*
+ * A duplicate wildcard ASCONF can arrive through a new NAT source after its
+ * original ACK was lost. Return only the cached authenticated ACK: do not
+ * insert or confirm a peer path from a replayed serial number.
+ */
+void
+sctp_send_asconf_ack_direct(struct sctp_tcb *stcb,
+    const struct sctp_asconf_ack *ack, struct sockaddr *destination, uint16_t port)
+{
+	struct mbuf *packet, *last = NULL;
+	struct sctp_auth_chunk *auth = NULL;
+	uint32_t auth_offset = 0;
+
+	if (ack->data == NULL) {
+		return;
+	}
+	packet = sctp_add_auth_chunk(NULL, &last, &auth, &auth_offset,
+	    stcb, SCTP_ASCONF_ACK);
+	if (packet == NULL || auth == NULL) {
+		if (packet != NULL) {
+			sctp_m_freem(packet);
+		}
+		return;
+	}
+	packet = sctp_copy_mbufchain(ack->data, packet, &last, 0, ack->len, 0);
+	if (packet == NULL) {
+		return;
+	}
+	SCTP_STAT_INCR_COUNTER64(sctps_outcontrolchunks);
+	SCTP_STAT_INCR_COUNTER64(sctps_outcontrolchunks);
+	(void)sctp_lowlevel_chunk_output(stcb->sctp_ep, stcb, NULL,
+	    destination, packet, auth_offset, auth, stcb->asoc.authinfo.active_keyid,
+	    1, 0, 1, stcb->sctp_ep->sctp_lport, stcb->rport,
+	    htonl(stcb->asoc.peer_vtag), port, NULL,
+#if defined(__FreeBSD__) && !defined(__Userspace__)
+	    0, 0,
+#endif
+	    false, SCTP_SO_NOT_LOCKED);
+}
+
 void
 sctp_send_asconf_ack(struct sctp_tcb *stcb)
 {
@@ -10023,7 +10063,8 @@ sctp_send_asconf_ack(struct sctp_tcb *stcb)
 		return;
 	}
 	if (latest_ack->last_sent_to != NULL &&
-	    latest_ack->last_sent_to == stcb->asoc.last_control_chunk_from) {
+	    latest_ack->last_sent_to == stcb->asoc.last_control_chunk_from &&
+	    !sctp_is_nat_mobility(stcb)) {
 		/* we're doing a retransmission */
 		net = sctp_find_alternate_net(stcb, stcb->asoc.last_control_chunk_from, 0);
 		if (net == NULL) {
