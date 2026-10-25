@@ -5501,7 +5501,7 @@ sctp_process_control(struct mbuf *m, int iphlen, int *offset, int length,
 				}
 				stcb->asoc.overall_error_count = 0;
 				sctp_handle_asconf_ack(m, *offset,
-				                       (struct sctp_asconf_ack_chunk *)ch, stcb, *netp, &abort_no_unlock);
+				                       (struct sctp_asconf_ack_chunk *)ch, stcb, *netp, dst, &abort_no_unlock);
 				if (abort_no_unlock)
 					return (NULL);
 			}

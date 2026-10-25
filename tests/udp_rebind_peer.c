@@ -9,6 +9,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef SCTP_TEST_PRIVATE_SOURCE
+void restrict_ipv4_sources(struct socket *, int);
+#endif
+
 static void diagnostic(int warning, const char *message)
 {
 	(void)warning;
@@ -34,6 +38,9 @@ int main(int argc, char **argv)
 	struct sctp_assocparams association;
 	struct sctp_rtoinfo rto;
 	int server, tick, family, dual, one = 1;
+#ifdef SCTP_TEST_PRIVATE_SOURCE
+	int restricted = 0;
+#endif
 
 	if (argc != 5)
 		return 2;
@@ -109,7 +116,10 @@ int main(int argc, char **argv)
 			first.sin6_port = htons(5001);
 			memset(&second, 0, sizeof(second));
 			second.sin_family = AF_INET;
-			inet_pton(AF_INET, "127.0.0.2", &second.sin_addr);
+			inet_pton(AF_INET,
+					getenv("SCTP_TEST_IPV4") != NULL ? getenv("SCTP_TEST_IPV4")
+													 : "127.0.0.2",
+					&second.sin_addr);
 			second.sin_port = htons(5001);
 			memcpy(peers.bytes, &first, sizeof(first));
 			memcpy(peers.bytes + sizeof(first), &second, sizeof(second));
@@ -145,6 +155,12 @@ int main(int argc, char **argv)
 			size = usrsctp_recvv(sock, buffer, sizeof(buffer), NULL, NULL, &info, &length,
 					&type, &flags);
 			if (size > 0 && !(flags & MSG_NOTIFICATION)) {
+#ifdef SCTP_TEST_PRIVATE_SOURCE
+				if (dual && !restricted && tick >= 40) {
+					restrict_ipv4_sources(sock, !server);
+					restricted = 1;
+				}
+#endif
 				if (server)
 					check((int)usrsctp_sendv(sock, buffer, size, NULL, 0, NULL, 0,
 								  SCTP_SENDV_NOINFO, 0),

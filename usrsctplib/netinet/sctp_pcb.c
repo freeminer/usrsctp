@@ -826,7 +826,9 @@ sctp_does_stcb_own_this_addr(struct sctp_tcb *stcb, struct sockaddr *to)
 			}
 			LIST_FOREACH(sctp_ifa, &sctp_ifn->ifalist, next_ifa) {
 				if (sctp_is_addr_restricted(stcb, sctp_ifa) &&
-				    (!sctp_is_addr_pending(stcb, sctp_ifa))) {
+				    (!sctp_is_addr_pending(stcb, sctp_ifa)) &&
+				    !(sctp_ifa->address.sa.sa_family == AF_INET &&
+				      sctp_is_nat_mobility(stcb))) {
 					/* We allow pending addresses, where we
 					 * have sent an asconf-add to be considered
 					 * valid.
@@ -845,7 +847,8 @@ sctp_does_stcb_own_this_addr(struct sctp_tcb *stcb, struct sockaddr *to)
 						sin = &sctp_ifa->address.sin;
 						rsin = (struct sockaddr_in *)to;
 						if ((ipv4_local_scope == 0) &&
-						    IN4_ISPRIVATE_ADDRESS(&sin->sin_addr)) {
+						    IN4_ISPRIVATE_ADDRESS(&sin->sin_addr) &&
+						    !sctp_is_nat_mobility(stcb)) {
 							continue;
 						}
 #if defined(__FreeBSD__) && !defined(__Userspace__)
@@ -935,7 +938,9 @@ sctp_does_stcb_own_this_addr(struct sctp_tcb *stcb, struct sockaddr *to)
 				continue;
 			}
 			if (sctp_is_addr_restricted(stcb, laddr->ifa) &&
-			    (!sctp_is_addr_pending(stcb, laddr->ifa))) {
+			    (!sctp_is_addr_pending(stcb, laddr->ifa)) &&
+			    !(laddr->ifa->address.sa.sa_family == AF_INET &&
+			      sctp_is_nat_mobility(stcb))) {
 				/* We allow pending addresses, where we
 				 * have sent an asconf-add to be considered
 				 * valid.

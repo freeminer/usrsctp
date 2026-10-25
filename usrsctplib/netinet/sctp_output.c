@@ -3551,7 +3551,8 @@ sctp_source_address_selection(struct sctp_inpcb *inp,
 							continue;
 						}
 						if (stcb != NULL &&
-								(!sctp_is_address_in_scope(ifa, &stcb->asoc.scope, 0) ||
+								((!sctp_is_address_in_scope(ifa, &stcb->asoc.scope, 0) &&
+											!(fam == AF_INET && sctp_is_nat_mobility(stcb))) ||
 										(sctp_is_addr_restricted(stcb, ifa) &&
 												(!non_asoc_addr_ok ||
 														!sctp_is_addr_pending(
