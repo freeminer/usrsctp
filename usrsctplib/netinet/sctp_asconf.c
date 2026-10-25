@@ -1674,7 +1674,7 @@ sctp_asconf_process_error(struct sctp_tcb *stcb SCTP_UNUSED,
  */
 static void
 sctp_asconf_process_param_ack(struct sctp_tcb *stcb,
-			      struct sctp_asconf_addr *aparam, uint32_t flag)
+			      struct sctp_asconf_addr *aparam, uint32_t flag, struct sockaddr *destination)
 {
 	uint16_t param_type;
 
@@ -1686,7 +1686,26 @@ sctp_asconf_process_param_ack(struct sctp_tcb *stcb,
 	case SCTP_ADD_IP_ADDRESS:
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
 			"process_param_ack: added IP address\n");
-		sctp_asconf_addr_mgmt_ack(stcb, aparam->ifa, flag);
+		if (aparam->ifa == NULL && flag && sctp_is_nat_mobility(stcb)) {
+			struct sctp_ifa *ifa;
+
+			/* A wildcard ADD acknowledges the packet source, not
+			 * the zero address in its parameter. The ACK's actual
+			 * local destination identifies that source through NAT. */
+			SCTP_IPI_ADDR_RLOCK();
+			ifa = sctp_find_ifa_by_addr(destination, stcb->asoc.vrf_id,
+			    SCTP_ADDR_LOCKED);
+			if (ifa != NULL) {
+				atomic_add_int(&ifa->refcount, 1);
+			}
+			SCTP_IPI_ADDR_RUNLOCK();
+			if (ifa != NULL) {
+				sctp_del_local_addr_restricted(stcb, ifa);
+				sctp_free_ifa(ifa);
+			}
+		} else {
+			sctp_asconf_addr_mgmt_ack(stcb, aparam->ifa, flag);
+		}
 		break;
 	case SCTP_DEL_IP_ADDRESS:
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
@@ -1737,7 +1756,7 @@ sctp_asconf_ack_clear(struct sctp_tcb *stcb SCTP_UNUSED)
 void
 sctp_handle_asconf_ack(struct mbuf *m, int offset,
 		       struct sctp_asconf_ack_chunk *cp, struct sctp_tcb *stcb,
-		       struct sctp_nets *net, int *abort_no_unlock)
+		       struct sctp_nets *net, struct sockaddr *destination, int *abort_no_unlock)
 {
 	struct sctp_association *asoc;
 	uint32_t serial_num;
@@ -1848,7 +1867,7 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
 				break;
 			}
 			/* process the parameter, failed flag */
-			sctp_asconf_process_param_ack(stcb, ap, 0);
+			sctp_asconf_process_param_ack(stcb, ap, 0, destination);
 			/* process the error response */
 			sctp_asconf_process_error(stcb, aph);
 			break;
@@ -1860,7 +1879,7 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
 				break;
 			}
 			/* process the parameter, success flag */
-			sctp_asconf_process_param_ack(stcb, ap, 1);
+			sctp_asconf_process_param_ack(stcb, ap, 1, destination);
 			break;
 		default:
 			break;
@@ -1893,9 +1912,9 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
 			 * < last_error_id, then success else, failure
 			 */
 			if (aa->ap.aph.correlation_id < last_error_id)
-				sctp_asconf_process_param_ack(stcb, aa, 1);
+				sctp_asconf_process_param_ack(stcb, aa, 1, destination);
 			else
-				sctp_asconf_process_param_ack(stcb, aa, 0);
+				sctp_asconf_process_param_ack(stcb, aa, 0, destination);
 		} else {
 			/*
 			 * since we always process in order (FIFO queue) if
@@ -2474,6 +2493,32 @@ sctp_is_addr_pending(struct sctp_tcb *stcb, struct sctp_ifa *sctp_ifa)
 			}
 
 			ph = (struct sctp_paramhdr *)(aph + 1);
+			/* A wildcard ADD announces whichever source carries this
+			 * authenticated ASCONF, including a newly restricted IFA. */
+			if (param_type == SCTP_ADD_IP_ADDRESS &&
+			    sctp_is_nat_mobility(stcb)) {
+#ifdef INET
+				if (param_length >= sizeof(struct sctp_asconf_addrv4_param) &&
+				    ntohs(ph->param_type) == SCTP_IPV4_ADDRESS &&
+				    ntohs(ph->param_length) == sizeof(struct sctp_ipv4addr_param) &&
+				    ((struct sctp_ipv4addr_param *)ph)->addr == INADDR_ANY) {
+					return (1);
+				}
+#endif
+#ifdef INET6
+				if (param_length >= sizeof(struct sctp_asconf_addr_param) &&
+				    ntohs(ph->param_type) == SCTP_IPV6_ADDRESS &&
+				    ntohs(ph->param_length) == sizeof(struct sctp_ipv6addr_param)) {
+					struct in6_addr address;
+
+					memcpy(&address, ((struct sctp_ipv6addr_param *)ph)->addr,
+					    sizeof(address));
+					if (IN6_IS_ADDR_UNSPECIFIED(&address)) {
+						return (1);
+					}
+				}
+#endif
+			}
 			if (sctp_addr_match(ph, &sctp_ifa->address.sa) != 0) {
 				switch (param_type) {
 				case SCTP_ADD_IP_ADDRESS:
@@ -3580,6 +3625,16 @@ out:
  * repair, this does not delete other paths: they may still be usable.
  * Only authenticated ASCONF can associate the new source with this peer.
  */
+int
+sctp_is_nat_mobility(struct sctp_tcb *stcb)
+{
+	return (SCTP_BASE_SYSCTL(sctp_mobility_base) &&
+	    stcb->asoc.auth_supported && stcb->asoc.asconf_supported &&
+	    stcb->asoc.peer_supports_nat &&
+	    stcb->asoc.primary_destination != NULL &&
+	    stcb->asoc.primary_destination->port != 0);
+}
+
 void
 sctp_asconf_queue_source_update(struct sctp_tcb *stcb, struct sctp_nets *net)
 {

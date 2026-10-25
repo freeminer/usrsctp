@@ -5,6 +5,7 @@ The IPv4 relay address is deliberately absent from the server's interfaces,
 as with a dual-stack server whose IPv4 address is behind a NAT.
 """
 import os
+import ipaddress
 import pathlib
 import select
 import shlex
@@ -16,6 +17,17 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+PRIVATE = bool(os.getenv("SCTP_TEST_PRIVATE"))
+LOST_ACK = bool(os.getenv("SCTP_TEST_LOST_ACK"))
+IPV4 = "127.0.0.2"
+TARGET4 = "127.0.0.1"
+if PRIVATE:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(("192.0.2.1", 9))  # Route query only; no packet is sent.
+        IPV4 = TARGET4 = route.getsockname()[0]
+    assert any(ipaddress.ip_address(IPV4) in ipaddress.ip_network(network)
+               for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")),         "private-source test needs a local RFC1918 IPv4 address"
+    os.environ["SCTP_TEST_IPV4"] = IPV4
 
 
 def udp(family, address, port=0):
@@ -40,9 +52,9 @@ def chunks(data):
 def run(binary):
     front6 = udp(socket.AF_INET6, "::1")
     relay_port = front6.getsockname()[1]
-    front4 = udp(socket.AF_INET, "127.0.0.2", relay_port)
+    front4 = udp(socket.AF_INET, IPV4, relay_port)
     back6 = udp(socket.AF_INET6, "::1")
-    back4 = udp(socket.AF_INET, "127.0.0.3")
+    back4 = udp(socket.AF_INET, TARGET4 if PRIVATE else "127.0.0.3")
     reserved = [udp(socket.AF_INET, "127.0.0.1") for _ in range(2)]
     client_port, server_port = [sock.getsockname()[1] for sock in reserved]
     for sock in reserved:
@@ -62,7 +74,9 @@ def run(binary):
         phase, last_rx, switch_rx = 0, -1, -1
         pending = b""
         confirmed4 = False
+        source_acked4 = False
         auth_probes = 0
+        lost_ack = False
         deadline = time.monotonic() + 12
         while phase < 4 and time.monotonic() < deadline:
             active6 = phase % 2 == 0
@@ -87,23 +101,33 @@ def run(binary):
                     if 193 in kinds:
                         assert 15 in kinds, "ASCONF probe must be authenticated"
                         auth_probes += 1
-                    assert confirmed4 or not any(kind in (0, 64) for kind in kinds),                         "DATA sent before IPv4 path verification"
-                    back4.sendto(data, ("127.0.0.1", server_port))
+                    permitted = source_acked4 if PRIVATE else confirmed4
+                    assert permitted or not any(kind in (0, 64) for kind in kinds),                         "DATA sent before IPv4 source/path verification"
+                    back4.sendto(data, (TARGET4, server_port))
                 elif sock is back6 and active6:
+                    if LOST_ACK and phase == 0 and last_rx > 50 and 128 in chunks(data):
+                        lost_ack = True
+                        continue
                     front6.sendto(data, ("::1", client_port))
                 elif sock is back4 and not active6:
-                    if 5 in chunks(data):
+                    kinds = list(chunks(data))
+                    if 5 in kinds:
                         confirmed4 = True
-                    front4.sendto(data, ("127.0.0.1", client_port))
+                    if 128 in kinds:
+                        source_acked4 = True
+                    front4.sendto(data, (TARGET4, client_port))
             if last_rx > switch_rx + 50:
+                if LOST_ACK and phase == 0 and not lost_ack:
+                    continue
                 print(f"PASS: phase {phase} IPv{6 if active6 else 4}, echo {last_rx}",
                       flush=True)
                 switch_rx = last_rx
                 phase += 1
                 deadline = time.monotonic() + 12
         assert phase == 4, f"family handoff {phase} failed; last echo {last_rx}"
+        assert not LOST_ACK or lost_ack, "lost ASCONF-ACK was not exercised"
         assert auth_probes > 0, "IPv4 ASCONF probing was not exercised"
-        assert confirmed4, "IPv4 path was never verified"
+        assert (source_acked4 if PRIVATE else confirmed4), "IPv4 source/path was never verified"
         print("PASS: authenticated IPv4 probing and path verification before DATA",
               flush=True)
         successful = True
@@ -122,9 +146,16 @@ def run(binary):
 
 with tempfile.TemporaryDirectory(prefix="sctp-dualstack-") as temporary:
     binary = pathlib.Path(temporary) / "peer"
+    internal_flags, internal_sources = [], []
+    if PRIVATE:
+        flags_file = pathlib.Path(sys.argv[1]).resolve().parent / "CMakeFiles/usrsctp.dir/flags.make"
+        definitions = next(line.partition(" = ")[2] for line in flags_file.read_text().splitlines()
+                           if line.startswith("C_DEFINES = "))
+        internal_flags = [*shlex.split(definitions), "-DSCTP_TEST_PRIVATE_SOURCE"]
+        internal_sources = [str(ROOT / "tests/mobility_source.c")]
     subprocess.run(
-        ["cc", *shlex.split(os.getenv("CFLAGS", "")), "-std=c11",
+        ["cc", *internal_flags, *shlex.split(os.getenv("CFLAGS", "")), "-std=c11",
          "-D_DEFAULT_SOURCE", "-pthread", "-I" + str(ROOT / "usrsctplib"),
-         str(ROOT / "tests/udp_rebind_peer.c"), sys.argv[1], "-o", str(binary)],
+         str(ROOT / "tests/udp_rebind_peer.c"), *internal_sources, sys.argv[1], "-o", str(binary)],
         check=True)
     run(binary)

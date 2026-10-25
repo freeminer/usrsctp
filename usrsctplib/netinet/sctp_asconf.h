@@ -40,6 +40,8 @@
 /*
  * function prototypes
  */
+extern int sctp_is_nat_mobility(struct sctp_tcb *);
+
 extern void sctp_asconf_queue_source_update(struct sctp_tcb *, struct sctp_nets *);
 
 extern void sctp_asconf_cleanup(struct sctp_tcb *);
@@ -52,7 +54,7 @@ sctp_handle_asconf(struct mbuf *, unsigned int, struct sockaddr *,
 
 extern void
 sctp_handle_asconf_ack(struct mbuf *, int, struct sctp_asconf_ack_chunk *,
-     struct sctp_tcb *, struct sctp_nets *, int *);
+     struct sctp_tcb *, struct sctp_nets *, struct sockaddr *, int *);
 
 extern uint32_t
 sctp_addr_mgmt_ep_sa(struct sctp_inpcb *, struct sockaddr *, uint32_t,
