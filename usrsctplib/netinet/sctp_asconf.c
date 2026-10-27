@@ -1775,7 +1775,8 @@ sctp_asconf_process_error(struct sctp_tcb *stcb SCTP_UNUSED,
  */
 static void
 sctp_asconf_process_param_ack(struct sctp_tcb *stcb,
-			      struct sctp_asconf_addr *aparam, uint32_t flag, struct sockaddr *destination)
+			      struct sctp_asconf_addr *aparam, uint32_t flag,
+    struct sockaddr *destination, struct sctp_nets *net)
 {
 	uint16_t param_type;
 
@@ -1802,6 +1803,24 @@ sctp_asconf_process_param_ack(struct sctp_tcb *stcb,
 			SCTP_IPI_ADDR_RUNLOCK();
 			if (ifa != NULL) {
 				sctp_del_local_addr_restricted(stcb, ifa);
+				if (net != NULL &&
+				    net->ro._l_addr.sa.sa_family == ifa->address.sa.sa_family &&
+				    !(ifa->localifa_flags &
+				    (SCTP_BEING_DELETED | SCTP_ADDR_IFA_UNUSEABLE))) {
+					struct sctp_ifa *old = net->ro._s_addr;
+
+					/* ASCONF selects a fresh source, while DATA uses
+					 * the cached source. Keep that cache aligned with
+					 * the source the peer has just acknowledged. */
+					if (old != ifa) {
+						atomic_add_int(&ifa->refcount, 1);
+						net->ro._s_addr = ifa;
+						if (old != NULL) {
+							sctp_free_ifa(old);
+						}
+					}
+					net->src_addr_selected = 1;
+				}
 				sctp_free_ifa(ifa);
 			}
 		} else {
@@ -1968,7 +1987,7 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
 				break;
 			}
 			/* process the parameter, failed flag */
-			sctp_asconf_process_param_ack(stcb, ap, 0, destination);
+			sctp_asconf_process_param_ack(stcb, ap, 0, destination, net);
 			/* process the error response */
 			sctp_asconf_process_error(stcb, aph);
 			break;
@@ -1980,7 +1999,7 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
 				break;
 			}
 			/* process the parameter, success flag */
-			sctp_asconf_process_param_ack(stcb, ap, 1, destination);
+			sctp_asconf_process_param_ack(stcb, ap, 1, destination, net);
 			break;
 		default:
 			break;
@@ -2013,9 +2032,9 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
 			 * < last_error_id, then success else, failure
 			 */
 			if (aa->ap.aph.correlation_id < last_error_id)
-				sctp_asconf_process_param_ack(stcb, aa, 1, destination);
+				sctp_asconf_process_param_ack(stcb, aa, 1, destination, net);
 			else
-				sctp_asconf_process_param_ack(stcb, aa, 0, destination);
+				sctp_asconf_process_param_ack(stcb, aa, 0, destination, net);
 		} else {
 			/*
 			 * since we always process in order (FIFO queue) if

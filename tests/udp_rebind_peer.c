@@ -9,6 +9,11 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef SCTP_TEST_SOURCE_CACHE
+int pin_stale_ipv4_source(struct socket *);
+void request_source_update(struct socket *);
+#endif
+
 #ifdef SCTP_TEST_PRIVATE_SOURCE
 void restrict_ipv4_sources(struct socket *, int);
 #endif
@@ -45,7 +50,7 @@ int main(int argc, char **argv)
 	if (argc != 5)
 		return 2;
 	server = strcmp(argv[1], "server") == 0;
-	dual = strcmp(argv[4], "dual") == 0;
+	dual = strcmp(argv[4], "dual") == 0 || strcmp(argv[4], "dual4") == 0;
 	family = dual || strcmp(argv[4], "6") == 0 ? AF_INET6 : AF_INET;
 	address_length = family == AF_INET6 ? sizeof(*address6) : sizeof(*address4);
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -90,7 +95,21 @@ int main(int argc, char **argv)
 		address4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		address4->sin_port = htons(server ? 5001 : 5002);
 	}
+#ifdef SCTP_TEST_SOURCE_CACHE
+	if (server)
+		address6->sin6_addr = in6addr_loopback;
+#endif
 	check(usrsctp_bind(sock, (struct sockaddr *)&address, address_length), "bind");
+#ifdef SCTP_TEST_SOURCE_CACHE
+	if (server) {
+		struct sockaddr_in local4 = {0};
+		local4.sin_family = AF_INET;
+		local4.sin_port = htons(5001);
+		local4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		check(usrsctp_bindx(sock, (struct sockaddr *)&local4, 1, SCTP_BINDX_ADD_ADDR),
+				"bind IPv4");
+	}
+#endif
 	check(usrsctp_set_non_blocking(sock, 1), "nonblocking");
 	if (server) {
 		check(usrsctp_listen(sock, 1), "listen");
@@ -121,8 +140,13 @@ int main(int argc, char **argv)
 													 : "127.0.0.2",
 					&second.sin_addr);
 			second.sin_port = htons(5001);
-			memcpy(peers.bytes, &first, sizeof(first));
-			memcpy(peers.bytes + sizeof(first), &second, sizeof(second));
+			if (strcmp(argv[4], "dual4") == 0) {
+				memcpy(peers.bytes, &second, sizeof(second));
+				memcpy(peers.bytes + sizeof(second), &first, sizeof(first));
+			} else {
+				memcpy(peers.bytes, &first, sizeof(first));
+				memcpy(peers.bytes + sizeof(first), &second, sizeof(second));
+			}
 			if (usrsctp_connectx(sock, (struct sockaddr *)peers.bytes, 2, NULL) < 0 &&
 					errno != EINPROGRESS)
 				check(-1, "connectx");
@@ -147,10 +171,33 @@ int main(int argc, char **argv)
 				puts("ACCEPTED");
 			}
 		} else {
-			if (!server && tick % 10 == 0) {
-				int n = snprintf(buffer, sizeof(buffer), "%d", tick);
+#ifdef SCTP_TEST_SOURCE_CACHE
+			if (server && tick % 10 == 0) {
+				int n = snprintf(buffer, sizeof(buffer), "S%d", tick);
 				(void)usrsctp_sendv(
 						sock, buffer, n, NULL, 0, NULL, 0, SCTP_SENDV_NOINFO, 0);
+			}
+			if (!server && tick == 40) {
+				check(pin_stale_ipv4_source(sock), "pin source");
+				puts("PINNED");
+			}
+			if (!server && tick == 60)
+				request_source_update(sock);
+#endif
+			if (!server && tick % 10 == 0) {
+				int n = snprintf(buffer, sizeof(buffer), "%d", tick);
+#ifdef SCTP_TEST_SOURCE_CACHE
+				struct sctp_sendv_spa spa = {0};
+				spa.sendv_flags = SCTP_SEND_SNDINFO_VALID | SCTP_SEND_PRINFO_VALID;
+				spa.sendv_sndinfo.snd_sid = 7;
+				spa.sendv_sndinfo.snd_flags = SCTP_UNORDERED | SCTP_EOR;
+				spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_RTX;
+				(void)usrsctp_sendv(
+						sock, buffer, n, NULL, 0, &spa, sizeof(spa), SCTP_SENDV_SPA, 0);
+#else
+				(void)usrsctp_sendv(
+						sock, buffer, n, NULL, 0, NULL, 0, SCTP_SENDV_NOINFO, 0);
+#endif
 			}
 			size = usrsctp_recvv(sock, buffer, sizeof(buffer), NULL, NULL, &info, &length,
 					&type, &flags);
