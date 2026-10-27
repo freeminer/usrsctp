@@ -33,6 +33,9 @@
  */
 
 #include <netinet/sctp_os.h>
+#if defined(__Userspace__)
+#include "user_addr_monitor.h"
+#endif
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 #include <sys/proc.h>
 #endif
@@ -1806,6 +1809,17 @@ sctp_process_a_data_chunk(struct sctp_tcb *stcb, struct sctp_association *asoc,
 		 * wait a minute, this guy is gone, there is no longer a
 		 * receiver. Send peer an ABORT!
 		 */
+#if defined(__Userspace__)
+		{
+			char diagnostic[192];
+
+			snprintf(diagnostic, sizeof(diagnostic),
+			    "DATA received after socket close assoc=%u tsn=%u stream=%u endpoint_flags=%x state=%x",
+			    (unsigned)asoc->assoc_id, (unsigned)tsn, (unsigned)sid,
+			    (unsigned)stcb->sctp_ep->sctp_flags, (unsigned)asoc->state);
+			sctp_diagnostic(1, diagnostic);
+		}
+#endif
 		op_err = sctp_generate_cause(SCTP_CAUSE_OUT_OF_RESC, "");
 		sctp_abort_an_association(stcb->sctp_ep, stcb, op_err, false, SCTP_SO_NOT_LOCKED);
 		*abort_flag = 1;

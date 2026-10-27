@@ -33,6 +33,9 @@
  */
 
 #include <netinet/sctp_os.h>
+#if defined(__Userspace__)
+#include "user_addr_monitor.h"
+#endif
 #if defined(__FreeBSD__) && !defined(__Userspace__)
 #include <sys/proc.h>
 #endif
@@ -10327,6 +10330,19 @@ sctp_chunk_retransmission(struct sctp_inpcb *inp,
 			struct mbuf *op_err;
 			char msg[SCTP_DIAG_INFO_LEN];
 
+#if defined(__Userspace__)
+			{
+				char diagnostic[256];
+
+				snprintf(diagnostic, sizeof(diagnostic),
+				    "DATA retransmission limit exceeded assoc=%u tsn=%u stream=%u transmissions=%u limit=%u unacked=%u peer_rwnd=%u",
+				    (unsigned)asoc->assoc_id, (unsigned)chk->rec.data.tsn,
+				    (unsigned)chk->rec.data.sid, (unsigned)chk->snd_count,
+				    (unsigned)SCTP_BASE_SYSCTL(sctp_max_retran_chunk),
+				    (unsigned)asoc->sent_queue_cnt, (unsigned)asoc->peers_rwnd);
+				sctp_diagnostic(1, diagnostic);
+			}
+#endif
 			SCTP_SNPRINTF(msg, sizeof(msg), "TSN %8.8x retransmitted %d times, giving up",
 			              chk->rec.data.tsn, chk->snd_count);
 			op_err = sctp_generate_cause(SCTP_BASE_SYSCTL(sctp_diag_info_code),
