@@ -58,3 +58,17 @@ The lost-ACK variant drops an ASCONF-ACK on the IPv6 path, then switches to
 IPv4. A duplicate authenticated ASCONF may only receive the original cached
 ACK at its new source; it must not add or validate a new peer path. A subsequent
 fresh ASCONF serial must announce that source before it can carry DATA.
+
+## Steady-state source cache
+
+```sh
+python3 tests/source_cache.py build/usrsctplib/libusrsctp.a
+```
+
+This test uses a valid non-loopback local IPv4 address to model an obsolete
+cached DATA source, while the OS-selected source for AUTH/ASCONF remains
+reachable. No interface or route is changed. The relay drops the obsolete
+source, verifies that the source update is acknowledged, then requires DATA to
+resume on the acknowledged source without waiting for path-failure thresholds.
+The test reproduces a one-way application stall on an otherwise live association.
+It supports both Makefiles and Ninja CMake builds, and the sanitizer flags above.
