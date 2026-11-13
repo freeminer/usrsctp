@@ -350,7 +350,10 @@ sctp_init_ifns_for_vrf(int vrfid)
 	}
 	/* Enumerate through each returned adapter and save its information */
 	for (pAdapt = pAdapterAddrs; pAdapt; pAdapt = pAdapt->Next) {
-		if (pAdapt->IfType == IF_TYPE_IEEE80211 || pAdapt->IfType == IF_TYPE_ETHERNET_CSMACD) {
+		/* fm: Register loopback for local SCTP endpoints. */
+		if (pAdapt->IfType == IF_TYPE_IEEE80211 || pAdapt->IfType == IF_TYPE_ETHERNET_CSMACD ||
+		    pAdapt->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+		/* === */
 			for (pUnicast = pAdapt->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
 				if (IN4_ISLINKLOCAL_ADDRESS(&(((struct sockaddr_in *)(pUnicast->Address.lpSockaddr))->sin_addr))) {
 					continue;
@@ -375,7 +378,9 @@ sctp_init_ifns_for_vrf(int vrfid)
 #ifdef INET6
 	AdapterAddrsSize = 0;
 
-	if ((Err = GetAdaptersAddresses(AF_INET6, 0, NULL, NULL, &AdapterAddrsSize)) != 0) {
+	/* fm: Wine may reject AF_INET6 although AF_UNSPEC includes IPv6. */
+	if ((Err = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, NULL, &AdapterAddrsSize)) != 0) {
+	/* === */
 		if ((Err != ERROR_BUFFER_OVERFLOW) && (Err != ERROR_INSUFFICIENT_BUFFER)) {
 			SCTP_PRINTF("GetAdaptersV6Addresses() sizing failed with error code %d\n", Err);
 			SCTP_PRINTF("err = %d; AdapterAddrsSize = %d\n", Err, AdapterAddrsSize);
@@ -388,15 +393,25 @@ sctp_init_ifns_for_vrf(int vrfid)
 		return;
 	}
 	/* Get actual adapter information */
-	if ((Err = GetAdaptersAddresses(AF_INET6, 0, NULL, pAdapterAddrs, &AdapterAddrsSize)) != ERROR_SUCCESS) {
+	/* fm: Match the family used for the sizing call. */
+	if ((Err = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, pAdapterAddrs, &AdapterAddrsSize)) != ERROR_SUCCESS) {
+	/* === */
 		SCTP_PRINTF("GetAdaptersV6Addresses() failed with error code %d\n", Err);
 		FREE(pAdapterAddrs);
 		return;
 	}
 	/* Enumerate through each returned adapter and save its information */
 	for (pAdapt = pAdapterAddrs; pAdapt; pAdapt = pAdapt->Next) {
-		if (pAdapt->IfType == IF_TYPE_IEEE80211 || pAdapt->IfType == IF_TYPE_ETHERNET_CSMACD) {
+		/* fm: Register loopback for local SCTP endpoints. */
+		if (pAdapt->IfType == IF_TYPE_IEEE80211 || pAdapt->IfType == IF_TYPE_ETHERNET_CSMACD ||
+		    pAdapt->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+		/* === */
 			for (pUnicast = pAdapt->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
+				/* fm: AF_UNSPEC includes IPv4 as well. */
+				if (pUnicast->Address.lpSockaddr->sa_family != AF_INET6) {
+					continue;
+				}
+				/* === */
 				sctp_ifa = sctp_add_addr_to_vrf(0,
 				                                NULL,
 				                                pAdapt->Ipv6IfIndex,
